@@ -1,123 +1,181 @@
+import re
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-# pyrefly: ignore [missing-import]
-import chromadb
-# pyrefly: ignore [missing-import]
-from langchain_community.vectorstores import Chroma
-# pyrefly: ignore [missing-import]
-from langchain_huggingface import HuggingFaceEmbeddings
-# pyrefly: ignore [missing-import]
-from langchain_core.documents import Document
+from datetime import datetime, timezone
+
 import requests
+from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+from sqlalchemy import create_engine, Integer, String, Text, DateTime
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, Session
 
-# In-memory Chroma client
-chroma_client = chromadb.EphemeralClient()
+# ---------------------------------------------------------------------------
+# Database setup
+# ---------------------------------------------------------------------------
+DATABASE_URL = "sqlite:///threat_intel.db"
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 
-embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-collection_name = "enterprise_docs"
+class Base(DeclarativeBase):
+    pass
 
-# We will initialize vectorstore during startup
-vectorstore = None
+
+class ThreatReport(Base):
+    __tablename__ = "threat_reports"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    raw_log: Mapped[str] = mapped_column(String(4000), nullable=False)
+    severity: Mapped[str] = mapped_column(String(20), nullable=False, default="Low")
+    ai_analysis: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    timestamp: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(timezone.utc)
+    )
+
+
+# ---------------------------------------------------------------------------
+# FastAPI application
+# ---------------------------------------------------------------------------
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global vectorstore
-    
-    # Initialize Chroma vector store with LangChain
-    vectorstore = Chroma(
-        client=chroma_client,
-        collection_name=collection_name,
-        embedding_function=embeddings,
-    )
-    
-    # Define mock documents with RBAC metadata
-    docs = [
-        Document(
-            page_content="The public guest wifi password is 'welcome2026'.",
-            metadata={"role": "public"}
-        ),
-        Document(
-            page_content="The upcoming Q4 financial merger with Acme Corp is valued at $50M.",
-            metadata={"role": "executive"}
-        ),
-        Document(
-            page_content="The master database SSH key is stored in /var/secure/keys.",
-            metadata={"role": "it_admin"}
-        )
-    ]
-    
-    # Add documents to the vector store
-    vectorstore.add_documents(docs)
-    print("Vector store populated with initial documents.")
+    # Create tables on startup
+    Base.metadata.create_all(bind=engine)
     yield
-    # Cleanup on shutdown
-    vectorstore = None
 
-app = FastAPI(title="Enterprise RAG with RBAC", lifespan=lifespan)
 
-class AskRequest(BaseModel):
-    query: str
-    user_role: str
+app = FastAPI(
+    title="Threat Intelligence Dashboard",
+    description="Full-stack cybersecurity dashboard powered by an offline LLM (Ollama).",
+    version="1.0.0",
+    lifespan=lifespan,
+)
 
-@app.post("/ask")
-def ask(request: AskRequest):
-    if not vectorstore:
-        raise HTTPException(status_code=500, detail="Vector store not initialized")
-    
-    # Implement RBAC Retrieval: Metadata filter for 'public' or the user's specific role
-    if request.user_role == "public":
-        filter_dict = {"role": "public"}
-    else:
-        # ChromaDB supports logical operators in filters
-        filter_dict = {
-            "$or": [
-                {"role": {"$eq": "public"}},
-                {"role": {"$eq": request.user_role}}
-            ]
-        }
-    
-    # Retrieve documents using the constructed filter
-    retriever = vectorstore.as_retriever(
-        search_kwargs={
-            "k": 3,
-            "filter": filter_dict
-        }
-    )
-    
-    retrieved_docs = retriever.invoke(request.query)
-    
-    # Prepare context for the LLM
-    context = "\n\n".join([doc.page_content for doc in retrieved_docs])
-    
-    # Prepare prompt
-    prompt = f"""Use the following context to answer the query. If the context does not contain the answer, say you don't know. Do not use outside knowledge.
+# ---------------------------------------------------------------------------
+# Pydantic schemas
+# ---------------------------------------------------------------------------
 
-Context:
-{context}
 
-Query: {request.query}
+class AnalyzeRequest(BaseModel):
+    raw_log: str
 
-Answer:"""
 
-    # Call local Ollama instance
-    ollama_url = "http://localhost:11434/api/generate"
-    payload = {
-        "model": "qwen2.5:3b",
-        "prompt": prompt,
-        "stream": False
-    }
-    
+class ThreatReportOut(BaseModel):
+    id: int
+    raw_log: str
+    severity: str
+    ai_analysis: str
+    timestamp: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ---------------------------------------------------------------------------
+# Ollama caller helper
+# ---------------------------------------------------------------------------
+OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_MODEL = "qwen2.5:3b"
+
+
+def _call_ollama(raw_log: str) -> tuple[str, str]:
+    """Call the local Ollama LLM to analyze a security log.
+
+    Returns (severity, analysis_text).
+    """
+    prompt = f"""You are an expert cybersecurity analyst. Analyze the following security log.
+
+Provide your response in exactly two sections separated by "---SEVERITY---":
+
+1. A concise threat analysis (2-4 sentences describing what happened and the risk).
+2. A single severity word: Low, Medium, High, or Critical.
+
+Security log:
+{raw_log}"""
+
+    payload = {"model": OLLAMA_MODEL, "prompt": prompt, "stream": False}
+
     try:
-        response = requests.post(ollama_url, json=payload)
-        response.raise_for_status()
-        llm_result = response.json()
-        answer = llm_result.get("response", "")
+        resp = requests.post(OLLAMA_URL, json=payload, timeout=120)
+        resp.raise_for_status()
+        text = resp.json().get("response", "").strip()
     except Exception as e:
-        answer = f"Error communicating with Ollama: {str(e)}"
-    
-    return {
-        "answer": answer,
-        "retrieved_docs": [{"content": doc.page_content, "metadata": doc.metadata} for doc in retrieved_docs]
-    }
+        raise HTTPException(
+            status_code=502,
+            detail=f"Ollama communication failed: {str(e)}",
+        )
+
+    # Parse the response
+    if "---SEVERITY---" in text:
+        parts = text.split("---SEVERITY---", 1)
+        analysis = parts[0].strip()
+        severity_raw = parts[1].strip().split("\n")[0].strip().title()
+    else:
+        # Fallback: use entire response as analysis, try to extract severity
+        analysis = text
+        severity_raw = text
+
+    # Normalize severity — try exact match first, then regex scan
+    valid_severities = {"Low", "Medium", "High", "Critical"}
+    if severity_raw in valid_severities:
+        severity = severity_raw
+    else:
+        match = re.search(r"\b(Critical|High|Medium|Low)\b", severity_raw, re.IGNORECASE)
+        severity = match.group(1).title() if match else "Low"
+
+    return severity, analysis
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/analyze", response_model=ThreatReportOut)
+def analyze_log(body: AnalyzeRequest):
+    """Analyze a raw security log via Ollama and persist the result."""
+    if not body.raw_log.strip():
+        raise HTTPException(status_code=400, detail="raw_log must not be empty")
+
+    severity, analysis = _call_ollama(body.raw_log)
+
+    report = ThreatReport(
+        raw_log=body.raw_log.strip(),
+        severity=severity,
+        ai_analysis=analysis,
+        timestamp=datetime.now(timezone.utc),
+    )
+
+    with Session(engine) as session:
+        session.add(report)
+        session.commit()
+        session.refresh(report)
+        result = ThreatReportOut.model_validate(report)
+
+    return result
+
+
+@app.get("/api/reports", response_model=list[ThreatReportOut])
+def list_reports():
+    """Return every threat report ordered newest-first."""
+    with Session(engine) as session:
+        reports = (
+            session.query(ThreatReport)
+            .order_by(ThreatReport.timestamp.desc())
+            .all()
+        )
+        return [
+            ThreatReportOut(
+                id=r.id,
+                raw_log=r.raw_log,
+                severity=r.severity,
+                ai_analysis=r.ai_analysis,
+                timestamp=r.timestamp,
+            )
+            for r in reports
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Static frontend (must be last so API routes take priority)
+# ---------------------------------------------------------------------------
+app.mount("/", StaticFiles(directory="static", html=True), name="static")

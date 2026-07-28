@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Threat Intelligence Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+    * { font-family: 'Inter', system-ui, sans-serif; }
+    .font-mono { font-family: 'JetBrains Mono', monospace; }
+
+    .severity-critical { background: rgba(239, 68, 68, 0.15); border-left: 3px solid #ef4444; }
+    .severity-high     { background: rgba(249, 115, 22, 0.15); border-left: 3px solid #f97316; }
+    .severity-medium   { background: rgba(234, 179, 8, 0.15); border-left: 3px solid #eab308; }
+    .severity-low      { background: rgba(34, 197, 94, 0.15); border-left: 3px solid #22c55e; }
+
+    .badge-critical { background: #ef4444; color: #fff; }
+    .badge-high     { background: #f97316; color: #fff; }
+    .badge-medium   { background: #eab308; color: #1e1e1e; }
+    .badge-low      { background: #22c55e; color: #fff; }
+
+    .pulse-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: #22c55e; animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.4; transform: scale(1.3); }
+    }
+  </style>
+</head>
+<body class="h-full bg-gray-950 text-gray-100 antialiased">
+
+  <!-- ========== Header ========== -->
+  <header class="border-b border-gray-800 bg-gray-900/60 backdrop-blur-md sticky top-0 z-50">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="flex items-center gap-2">
+          <svg class="w-7 h-7 text-emerald-400" fill="none" stroke="currentColor" stroke-width="1.8" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round"
+                  d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+          </svg>
+          <span class="text-lg font-bold tracking-tight">Threat<span class="text-emerald-400">Intel</span></span>
+        </div>
+        <span class="hidden sm:inline-flex items-center gap-1.5 text-xs text-gray-500 bg-gray-800 rounded-full px-3 py-1">
+          <span class="pulse-dot"></span> AI-Powered &middot; Ollama qwen2.5:3b
+        </span>
+      </div>
+      <div class="text-xs text-gray-500 font-mono" id="clock">--:--:--</div>
+    </div>
+  </header>
+
+  <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+
+    <!-- ========== Stats row ========== -->
+    <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-8" id="stats-row">
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+        <p class="text-xs text-gray-500 uppercase tracking-wider mb-1">Total Reports</p>
+        <p class="text-3xl font-bold" id="stat-total">0</p>
+      </div>
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+        <p class="text-xs text-gray-500 uppercase tracking-wider mb-1">Critical</p>
+        <p class="text-3xl font-bold text-red-400" id="stat-critical">0</p>
+      </div>
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+        <p class="text-xs text-gray-500 uppercase tracking-wider mb-1">High</p>
+        <p class="text-3xl font-bold text-orange-400" id="stat-high">0</p>
+      </div>
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+        <p class="text-xs text-gray-500 uppercase tracking-wider mb-1">Medium</p>
+        <p class="text-3xl font-bold text-yellow-400" id="stat-medium">0</p>
+      </div>
+    </div>
+
+    <!-- ========== Submit form ========== -->
+    <section class="bg-gray-900 border border-gray-800 rounded-xl p-6 mb-8">
+      <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider mb-4">Submit Security Log for Analysis</h2>
+      <form id="analyze-form" class="space-y-4">
+        <div>
+          <textarea id="raw-log"
+                    rows="5"
+                    class="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-3 text-gray-100 placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition font-mono text-sm resize-y"
+                    placeholder="Paste a raw security log here...&#10;&#10;e.g. 2026-07-28T08:12:33Z firewall-01 ALERT: Multiple failed SSH login attempts from IP 203.0.113.42 targeting root account"
+                    required></textarea>
+        </div>
+        <div class="flex items-center gap-3">
+          <button type="submit"
+                  id="submit-btn"
+                  class="inline-flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed rounded-lg font-medium text-sm transition-colors">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+            </svg>
+            Analyze Threat
+          </button>
+          <span id="form-status" class="text-sm text-gray-500"></span>
+        </div>
+      </form>
+    </section>
+
+    <!-- ========== Reports table ========== -->
+    <section class="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+      <div class="flex items-center justify-between px-6 py-4 border-b border-gray-800">
+        <h2 class="text-sm font-semibold text-gray-300 uppercase tracking-wider">Threat Reports</h2>
+        <button onclick="fetchReports()"
+                class="text-xs text-gray-500 hover:text-gray-300 transition flex items-center gap-1.5">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182" />
+          </svg>
+          Refresh
+        </button>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-sm" id="reports-table">
+          <thead>
+            <tr class="text-xs text-gray-500 uppercase tracking-wider border-b border-gray-800 bg-gray-900/50">
+              <th class="px-6 py-3 font-medium">Timestamp</th>
+              <th class="px-6 py-3 font-medium">Severity</th>
+              <th class="px-6 py-3 font-medium">Raw Log</th>
+              <th class="px-6 py-3 font-medium hidden lg:table-cell">AI Analysis</th>
+            </tr>
+          </thead>
+          <tbody id="reports-tbody">
+          </tbody>
+        </table>
+      </div>
+      <div id="empty-state" class="px-6 py-16 text-center hidden">
+        <svg class="w-12 h-12 mx-auto text-gray-700 mb-4" fill="none" stroke="currentColor" stroke-width="1" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+        </svg>
+        <p class="text-gray-500 text-sm">No threat reports yet.</p>
+        <p class="text-gray-600 text-xs mt-1">Submit a security log above to get started.</p>
+      </div>
+    </section>
+  </main>
+
+  <!-- ========== Toast ========== -->
+  <div id="toast" class="fixed bottom-4 right-4 max-w-sm bg-gray-800 border border-gray-700 rounded-lg px-5 py-3 text-sm shadow-2xl transform translate-y-20 opacity-0 transition-all duration-300 pointer-events-none z-50">
+    <span id="toast-msg"></span>
+  </div>
+
+  <script>
+    // ---------- Clock ----------
+    function updateClock() {
+      document.getElementById('clock').textContent = new Date().toLocaleTimeString('en-US', { hour12: false });
+    }
+    setInterval(updateClock, 1000); updateClock();
+
+    // ---------- Toast ----------
+    function showToast(msg, type='info') {
+      const el = document.getElementById('toast');
+      const msgEl = document.getElementById('toast-msg');
+      msgEl.textContent = msg;
+      el.style.borderColor = type === 'error' ? '#ef4444' : type === 'success' ? '#22c55e' : '#374151';
+      el.classList.remove('translate-y-20', 'opacity-0');
+      el.classList.add('translate-y-0', 'opacity-100');
+      setTimeout(() => { el.classList.add('translate-y-20', 'opacity-0'); }, 3500);
+    }
+
+    // ---------- Severity helpers ----------
+    const severityRowClass = {
+      'Critical': 'severity-critical',
+      'High':    'severity-high',
+      'Medium':  'severity-medium',
+      'Low':     'severity-low',
+    };
+    const severityBadgeClass = {
+      'Critical': 'badge-critical',
+      'High':    'badge-high',
+      'Medium':  'badge-medium',
+      'Low':     'badge-low',
+    };
+
+    // ---------- Fetch & Render ----------
+    async function fetchReports() {
+      const tbody = document.getElementById('reports-tbody');
+      const empty = document.getElementById('empty-state');
+      try {
+        const res = await fetch('/api/reports');
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const reports = await res.json();
+
+        if (!reports.length) {
+          tbody.innerHTML = '';
+          empty.classList.remove('hidden');
+        } else {
+          empty.classList.add('hidden');
+          tbody.innerHTML = reports.map(r => {
+            const ts = new Date(r.timestamp).toLocaleString('en-US', { hour12: false });
+            return `
+              <tr class="border-b border-gray-800/60 hover:bg-gray-800/30 transition ${severityRowClass[r.severity] || ''}">
+                <td class="px-6 py-3 text-gray-400 font-mono text-xs whitespace-nowrap">${ts}</td>
+                <td class="px-6 py-3">
+                  <span class="inline-block px-2.5 py-0.5 rounded-full text-xs font-semibold tracking-wide ${severityBadgeClass[r.severity] || 'badge-low'}">
+                    ${r.severity}
+                  </span>
+                </td>
+                <td class="px-6 py-3 text-gray-300 font-mono text-xs max-w-xs truncate" title="${escapeHtml(r.raw_log)}">
+                  ${escapeHtml(r.raw_log)}
+                </td>
+                <td class="px-6 py-3 text-gray-400 text-xs hidden lg:table-cell max-w-md truncate">
+                  ${escapeHtml(r.ai_analysis)}
+                </td>
+              </tr>`;
+          }).join('');
+        }
+
+        // Update stats
+        document.getElementById('stat-total').textContent = reports.length;
+        document.getElementById('stat-critical').textContent = reports.filter(r=>r.severity==='Critical').length;
+        document.getElementById('stat-high').textContent     = reports.filter(r=>r.severity==='High').length;
+        document.getElementById('stat-medium').textContent   = reports.filter(r=>r.severity==='Medium').length;
+      } catch (err) {
+        showToast('Failed to load reports: ' + err.message, 'error');
+      }
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+
+    // ---------- Form submit ----------
+    document.getElementById('analyze-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const rawLog = document.getElementById('raw-log').value.trim();
+      if (!rawLog) return;
+
+      const btn = document.getElementById('submit-btn');
+      const status = document.getElementById('form-status');
+      btn.disabled = true;
+      status.textContent = 'Analyzing with Ollama...';
+
+      try {
+        const res = await fetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ raw_log: rawLog }),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          throw new Error(err.detail || `HTTP ${res.status}`);
+        }
+        const report = await res.json();
+        status.textContent = `Done — severity: ${report.severity}`;
+        document.getElementById('raw-log').value = '';
+        showToast(`Analysis complete: ${report.severity} severity`, 'success');
+        await fetchReports();
+      } catch (err) {
+        showToast('Analysis failed: ' + err.message, 'error');
+        status.textContent = 'Error — see toast';
+      } finally {
+        btn.disabled = false;
+        setTimeout(() => { status.textContent = ''; }, 4000);
+      }
+    });
+
+    // ---------- Initial load ----------
+    fetchReports();
+  </script>
+</body>
+</html>
